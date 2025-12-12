@@ -81,5 +81,8 @@ class TensorStaticMethods(unittest.TestCase):
         x = Tensor.ones(3,3,3, dtype=dtypes.float)
         self.assertEqual(x.uop, y)
 
+class TestSchedule(unittest.TestCase):
+    pass
+
 if __name__ == "__main__":
     unittest.main()
