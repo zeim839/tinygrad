@@ -496,6 +496,9 @@ class Tensor(OpMixin):
     """
     return Tensor.empty(self.shape, dtype=kwargs.pop("dtype", self.dtype), device=kwargs.pop("device", self.device), **kwargs)
 
+  # Creates an empty tensor, then take's the tensor's buffer and
+  # allocate's it such that it points to the blob. The blob must
+  # live for as long as the new tensor.
   @staticmethod
   def from_blob(ptr:int, shape:tuple[int, ...], **kwargs) -> Tensor:
     """
@@ -4179,10 +4182,25 @@ class _ContextVar(Generic[T]):
     return ret
 _METADATA: _ContextVar[Metadata|None] = _ContextVar(default=None)
 
+# _metadata_wrapper is obviously a decorator.
+# This is basically used to profile function execution time.
+# It profiles API functions: nested calls are profiled with the
+# top-level, user-called function label.
+#
+# This information is later used in DEBUG, VIZ.
 def _metadata_wrapper(fn: Callable[P, T]) -> Callable[P, T]:
+
+  # TRACEMETA is defined in helpers.py
+
+  # This is the decorator wrapper.
+  # ---- The decorator wrapper begins here ----
   def _wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+
+    # Just call the wrapped function if this condition is met.
     if TRACEMETA < 1 or _METADATA.get() is not None: return fn(*args, **kwargs)
 
+    # This is generally skipped, as TRACEMETA is 1 by default.
+    # Adds additional caller information to the trace.
     if TRACEMETA >= 2:
       caller_frame = sys._getframe(frame := 1)
       caller_module = caller_frame.f_globals.get("__name__", None)
@@ -4203,16 +4221,38 @@ def _metadata_wrapper(fn: Callable[P, T]) -> Callable[P, T]:
       caller_lineno = caller_frame.f_lineno
 
       caller = f"{caller_module}:{caller_lineno}::{caller_func}"
-    else: caller = ""
+    else: caller = "" # By default, called is set to empty string.
 
+    # Sets the function being called to _METADATA
+    # .set returns the previous _METADATA state, so token is
+    # None, unless some nesting happens.
     token = _METADATA.set(Metadata(name=fn.__name__, caller=caller))
+
+    # Profiles function execution time.
+    # cpu_profile must make some use of _METADATA.
+    # WRONG! _METADATA gets used by fn!
     with cpu_profile(TracingKey(fn.__name__), "USER"):
       ret = fn(*args, **kwargs)
+
+    # Restores _METADATA back to token.
     _METADATA.set(token)
+
     return ret
+  # --- The decorator wrapper ends here ---
+
   return _wrapper
 
+# TRACEMETA is defined in helpers.py
 if TRACEMETA >= 1:
+  # inspect.getmembers() returns all members of an object in a list of
+  # (name, value) pairs sorted by name.
   for name, fn in inspect.getmembers(Tensor, inspect.isfunction):
-    if name in ["__class__", "__init__", "__new__", "__repr__", "backward", "sequential", "gradient"]: continue
+
+    # Do not wrap these functions.
+    if name in ["__class__", "__init__", "__new__", "__repr__", "backward", "reset_all_tensors", "sequential", "gradient"]: continue
+
+    # Wrap all other functions with _metadata_wrapper.
+    # functools.wraps(fn) creates a decorator that transfers
+    # metadata, docstring, etc. of fn to the resulting
+    # _metadata_wrapper decorator.
     setattr(Tensor, name, functools.wraps(fn)(_metadata_wrapper(fn)))
